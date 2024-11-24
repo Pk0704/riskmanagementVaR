@@ -1,0 +1,72 @@
+open Csv
+open ScikitLearn
+open ScikitLearn.Preprocessing
+open ScikitLearn.ModelSelection
+open ScikitLearn.Metrics
+open ScikitLearn.Ensemble
+
+(* Load and preprocess data *)
+let data = Csv.load "HistoricalData_Apple1.csv"
+
+(* Helper function to remove "$" and convert to float *)
+let parse_price str =
+  try float_of_string (String.trim (String.sub str 1 (String.length str - 1))) with
+  | _ -> nan
+
+let preprocess_column column =
+  Array.map parse_price column
+
+let close_last = preprocess_column (Array.of_list (Csv.column data "Close/Last"))
+let open_price = preprocess_column (Array.of_list (Csv.column data "Open"))
+let high = preprocess_column (Array.of_list (Csv.column data "High"))
+let low = preprocess_column (Array.of_list (Csv.column data "Low"))
+
+(* Combine features into an input matrix X and create target variable y *)
+let features = [| close_last; open_price; high; low |]
+let X = Array.init (Array.length close_last) (fun i -> Array.map (fun col -> col.(i)) features)
+let y = Array.copy close_last (* Assuming `Close/Last` as the target *)
+
+(* Normalize features *)
+let scaler = StandardScaler.create ()
+let X_scaled = StandardScaler.fit_transform scaler X
+
+(* Split data for time-series cross-validation *)
+let tscv = TimeSeriesSplit.create ~n_splits:5 ()
+
+(* Define hyperparameters *)
+let param_grid = [
+  "n_estimators", [100; 200];
+  "learning_rate", [0.01; 0.1];
+  "max_depth", [3; 5];
+]
+
+(* Initialize and fit the model with GridSearchCV *)
+let model = GridSearchCV.create
+  ~estimator:(GradientBoostingRegressor.create ~random_state:42 ())
+  ~param_grid
+  ~cv:tscv
+  ~scoring:"neg_mean_squared_error" ()
+
+let () = GridSearchCV.fit model ~X:X_scaled ~y
+
+(* Get the best model *)
+let best_model = GridSearchCV.best_estimator model
+
+(* Predict on test set *)
+let predicted_returns = GradientBoostingRegressor.predict best_model X_test
+
+(* Calculate VaR on predicted returns *)
+let confidence_level = 0.95
+let predicted_var = Array.sort compare predicted_returns;
+let var_index = int_of_float ((1.0 -. confidence_level) *. float_of_int (Array.length predicted_returns))
+let predicted_var_value = -.predicted_returns.(var_index)
+
+(* Evaluate model *)
+let mse = mean_squared_error ~y_true:y_test ~y_pred:predicted_returns
+let r2 = r2_score ~y_true:y_test ~y_pred:predicted_returns
+
+(* Print results *)
+Printf.printf "Mean Squared Error: %f\n" mse;
+Printf.printf "R-squared: %f\n" r2;
+Printf.printf "Predicted VaR at %f%%: %f%%\n" (confidence_level *. 100.0) (-.predicted_var_value *. 100.0);
+Printf.printf "Best Model Parameters: %s\n" (GridSearchCV.best_params model)
